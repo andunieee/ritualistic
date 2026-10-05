@@ -171,9 +171,7 @@ fn hkdf_extract(salt: &[u8], input_key: &[u8]) -> [u8; 32] {
     let mut hmac = hmac::Hmac::<sha2::Sha256>::new_from_slice(salt)
         .expect("hmac can take keys of any size so this never fails");
     hmac.update(input_key);
-    hmac.finalize()
-        .into_bytes()
-        .into()
+    hmac.finalize().into_bytes().into()
 }
 
 fn hkdf_expand_into(pseudorandomkey: &[u8], info: &[u8], iterations: usize) -> Vec<u8> {

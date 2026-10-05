@@ -468,7 +468,10 @@ mod tests {
         ];
 
         let nprofile = encode_nprofile(&pk, &relays);
-        assert_eq!(nprofile, "nprofile1qqsdjyv3uv8qq3ztjskqaqk263ctx2h3w9mycgn4hmstmxfh0m75qagpzemhxue69uhhyetvv9ujuurjd9kkzmpwdejhgqgswaehxw309ahx7um5wghxcctwvs3a0whv");
+        assert_eq!(
+            nprofile,
+            "nprofile1qqsdjyv3uv8qq3ztjskqaqk263ctx2h3w9mycgn4hmstmxfh0m75qagpzemhxue69uhhyetvv9ujuurjd9kkzmpwdejhgqgswaehxw309ahx7um5wghxcctwvs3a0whv"
+        );
 
         let result = decode(&nprofile).unwrap();
         if let DecodeResult::Profile(profile) = result {

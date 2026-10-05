@@ -317,14 +317,15 @@ impl<'de> serde::Deserialize<'de> for Envelope {
                                     })? as u32;
                                 }
                                 if let Some(hll) = count_result.get("hll")
-                                    && let Some(hll_str) = hll.as_str() {
-                                        if hll_str.len() != 512 {
-                                            return Err(serde::de::Error::custom(
-                                                EnvelopeError::InvalidHllLength.to_string(),
-                                            ));
-                                        }
-                                        hyperloglog = lowercase_hex::decode(hll_str).ok();
+                                    && let Some(hll_str) = hll.as_str()
+                                {
+                                    if hll_str.len() != 512 {
+                                        return Err(serde::de::Error::custom(
+                                            EnvelopeError::InvalidHllLength.to_string(),
+                                        ));
                                     }
+                                    hyperloglog = lowercase_hex::decode(hll_str).ok();
+                                }
 
                                 Ok(Envelope::CountReply {
                                     subscription_id,
@@ -463,7 +464,7 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Kind, ID};
+    use crate::{ID, Kind};
 
     #[test]
     fn test_decode_in_event() {

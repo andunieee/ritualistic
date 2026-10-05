@@ -207,7 +207,10 @@ mod tests {
         );
 
         assert_eq!(extract_event_id(r#"{"id":"abc"}"#), None);
-        assert_eq!(extract_event_id(r#"{"id":"ééééééééééééééééééééééééééééééééé"}"#), None);
+        assert_eq!(
+            extract_event_id(r#"{"id":"ééééééééééééééééééééééééééééééééé"}"#),
+            None
+        );
         assert_eq!(extract_event_pubkey(r#"{"pubkey":"abc"}"#), None);
     }
 }

@@ -321,8 +321,7 @@ mod tests {
         let mut urls = Vec::new();
         let mut servers = Vec::new();
         for i in 0..5 {
-            let (url, server) =
-                spawn_relay_with_events("test", &events[i * 3..i * 3 + 6]).await;
+            let (url, server) = spawn_relay_with_events("test", &events[i * 3..i * 3 + 6]).await;
             urls.push(url);
             servers.push(server);
         }
@@ -353,7 +352,11 @@ mod tests {
         assert_eq!(got, expected);
 
         // and they are sorted from newest to oldest
-        assert!(results.windows(2).all(|w| w[0].created_at >= w[1].created_at));
+        assert!(
+            results
+                .windows(2)
+                .all(|w| w[0].created_at >= w[1].created_at)
+        );
 
         for server in servers {
             server.abort();

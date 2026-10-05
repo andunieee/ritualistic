@@ -99,7 +99,10 @@ impl ReadTransaction for BTreeTransaction {
     ) -> Result<()> {
         let map = self.inner.index(index).read().unwrap();
         let from = from.map(|key| key.to_vec());
-        for key in map.range((from, std::ops::Bound::Unbounded)).map(|(key, _)| key) {
+        for key in map
+            .range((from, std::ops::Bound::Unbounded))
+            .map(|(key, _)| key)
+        {
             if !cb(key) {
                 break;
             }

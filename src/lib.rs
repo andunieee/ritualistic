@@ -28,13 +28,13 @@ pub mod relay_information;
 pub mod server;
 
 mod btree;
-#[cfg(all(feature = "lmdb", not(target_arch = "wasm32")))]
-mod lmdb;
-#[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
-mod redb;
 pub mod database;
 mod finalizer;
+#[cfg(all(feature = "lmdb", not(target_arch = "wasm32")))]
+mod lmdb;
 mod network;
+#[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
+mod redb;
 mod relay;
 mod tags;
 mod types;
@@ -43,21 +43,20 @@ mod util;
 // re-export commonly used types
 pub use btree::BTreeEventDatabase;
 pub use database::EventDatabase;
-#[cfg(all(feature = "lmdb", not(target_arch = "wasm32")))]
-pub use lmdb::LMDBEventDatabase;
-#[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
-pub use redb::RedbEventDatabase;
 pub use event::{ArchivedEvent, Event};
 pub use event_template::EventTemplate;
 pub use filter::{Filter, TagQuery};
 pub use keys::{PubKey, SecretKey};
+#[cfg(all(feature = "lmdb", not(target_arch = "wasm32")))]
+pub use lmdb::LMDBEventDatabase;
 pub use metadata::Metadata;
 pub use network::{Network, Occurrence, PublishResult};
 pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
 pub use profile::Profile;
+#[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
+pub use redb::RedbEventDatabase;
 pub use relay::{CloseReason, Relay, SubscriptionOptions};
 pub use tags::{Tag, Tags};
 pub use timestamp::Timestamp;
 pub use types::*;
 pub use util::*;
-

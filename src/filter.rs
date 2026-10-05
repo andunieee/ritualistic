@@ -160,33 +160,38 @@ impl Filter {
         }
 
         if let Some(since) = self.since
-            && event.created_at < since {
-                return false;
-            }
+            && event.created_at < since
+        {
+            return false;
+        }
 
         if let Some(until) = self.until
-            && event.created_at > until {
-                return false;
-            }
+            && event.created_at > until
+        {
+            return false;
+        }
 
         true
     }
 
     pub fn matches_except_time(&self, event: &crate::Event) -> bool {
         if let Some(ref ids) = self.ids
-            && !ids.contains(&event.id) {
-                return false;
-            }
+            && !ids.contains(&event.id)
+        {
+            return false;
+        }
 
         if let Some(ref kinds) = self.kinds
-            && !kinds.contains(&event.kind) {
-                return false;
-            }
+            && !kinds.contains(&event.kind)
+        {
+            return false;
+        }
 
         if let Some(ref authors) = self.authors
-            && !authors.contains(&event.pubkey) {
-                return false;
-            }
+            && !authors.contains(&event.pubkey)
+        {
+            return false;
+        }
 
         if let Some(ref tags) = self.tags {
             for TagQuery(tag_name, tag_values) in tags {
@@ -208,9 +213,10 @@ impl Filter {
 
         // if until is less than since, return 0
         if let (Some(until), Some(since)) = (self.until, self.since)
-            && until < since {
-                return 0;
-            }
+            && until < since
+        {
+            return 0;
+        }
 
         // if both authors and kinds are specified
         if let (Some(authors), Some(kinds)) = (&self.authors, &self.kinds) {
@@ -222,12 +228,13 @@ impl Filter {
 
             // check if we have d tags and all kinds are addressable
             if let Some(tags) = &self.tags
-                && let Some(d_tags) = tags.iter().find(|tag| tag.0 == "d") {
-                    let all_are_addressable = kinds.iter().all(|k| k.is_addressable());
-                    if all_are_addressable {
-                        return authors.len() * kinds.len() * d_tags.1.len();
-                    }
+                && let Some(d_tags) = tags.iter().find(|tag| tag.0 == "d")
+            {
+                let all_are_addressable = kinds.iter().all(|k| k.is_addressable());
+                if all_are_addressable {
+                    return authors.len() * kinds.len() * d_tags.1.len();
                 }
+            }
         }
 
         // default to maximum value

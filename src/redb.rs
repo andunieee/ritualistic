@@ -121,12 +121,18 @@ impl ReadTransaction for RedbTransaction {
     type EventRef = RedbEventRef;
 
     fn has_event(&self, id: crate::ShortID) -> Result<bool> {
-        with_table!(self, EVENTS, |table| Ok(table.get(id.0).map_err(err)?.is_some()))
+        with_table!(self, EVENTS, |table| Ok(table
+            .get(id.0)
+            .map_err(err)?
+            .is_some()))
     }
 
     fn get_event(&self, id: crate::ShortID) -> Result<RedbEventRef> {
         with_table!(self, EVENTS, |table| {
-            let guard = table.get(id.0).map_err(err)?.ok_or(DatabaseError::EventNotFound)?;
+            let guard = table
+                .get(id.0)
+                .map_err(err)?
+                .ok_or(DatabaseError::EventNotFound)?;
             let bytes = guard.value();
             let mut owned = rkyv::util::AlignedVec::with_capacity(bytes.len());
             owned.extend_from_slice(bytes);
@@ -197,7 +203,9 @@ impl WriteTransaction for RedbTransaction {
         match self.0 {
             Txn::Write(txn) => Rc::try_unwrap(txn)
                 .map_err(|_| {
-                    DatabaseError::Redb("can't commit a transaction that is still in use".to_string())
+                    DatabaseError::Redb(
+                        "can't commit a transaction that is still in use".to_string(),
+                    )
                 })?
                 .commit()
                 .map_err(err),
@@ -217,7 +225,10 @@ mod tests {
 
     fn temp_db() -> (RedbEventDatabase, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        (RedbEventDatabase::open(dir.path().join("db.redb")).unwrap(), dir)
+        (
+            RedbEventDatabase::open(dir.path().join("db.redb")).unwrap(),
+            dir,
+        )
     }
 
     mod suite {

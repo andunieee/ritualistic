@@ -58,14 +58,24 @@ impl LMDBEventDatabase {
                 check(ffi::mdb_env_set_maxdbs(env, 1 + Index::ALL.len() as u32))?;
                 check(ffi::mdb_env_set_maxreaders(env, 1000))?;
                 check(ffi::mdb_env_set_mapsize(env, map_size as _))?;
-                check(ffi::mdb_env_open(env, c_path.as_ptr(), ffi::MDB_NOTLS, 0o644))?;
+                check(ffi::mdb_env_open(
+                    env,
+                    c_path.as_ptr(),
+                    ffi::MDB_NOTLS,
+                    0o644,
+                ))?;
 
                 let mut txn: *mut ffi::MDB_txn = std::ptr::null_mut();
                 check(ffi::mdb_txn_begin(env, std::ptr::null_mut(), 0, &mut txn))?;
                 let open = |name: &str| -> Result<ffi::MDB_dbi> {
                     let c_name = std::ffi::CString::new(name).unwrap();
                     let mut dbi: ffi::MDB_dbi = 0;
-                    check(ffi::mdb_dbi_open(txn, c_name.as_ptr(), ffi::MDB_CREATE, &mut dbi))?;
+                    check(ffi::mdb_dbi_open(
+                        txn,
+                        c_name.as_ptr(),
+                        ffi::MDB_CREATE,
+                        &mut dbi,
+                    ))?;
                     Ok(dbi)
                 };
 
@@ -107,9 +117,7 @@ impl LMDBEventDatabase {
     fn begin(&self, read_only: bool) -> Result<LMDBTransaction> {
         let mut txn: *mut ffi::MDB_txn = std::ptr::null_mut();
         let flags = if read_only { ffi::MDB_RDONLY } else { 0 };
-        check(unsafe {
-            ffi::mdb_txn_begin(self.env.env, std::ptr::null_mut(), flags, &mut txn)
-        })?;
+        check(unsafe { ffi::mdb_txn_begin(self.env.env, std::ptr::null_mut(), flags, &mut txn) })?;
 
         Ok(LMDBTransaction {
             inner: Rc::new(Txn {
@@ -176,7 +184,9 @@ impl std::ops::Deref for LMDBEventRef {
 
     fn deref(&self) -> &Self::Target {
         let bytes = match &self.0 {
-            EventBytes::Mapped { ptr, len, .. } => unsafe { std::slice::from_raw_parts(*ptr, *len) },
+            EventBytes::Mapped { ptr, len, .. } => unsafe {
+                std::slice::from_raw_parts(*ptr, *len)
+            },
             EventBytes::Owned(bytes) => bytes.as_slice(),
         };
 
@@ -195,7 +205,8 @@ impl LMDBTransaction {
         let id_bytes = id.0.to_ne_bytes();
         let mut key = val(&id_bytes);
         let mut data = val(&[]);
-        let rc = unsafe { ffi::mdb_get(self.inner.txn, self.inner.env.events, &mut key, &mut data) };
+        let rc =
+            unsafe { ffi::mdb_get(self.inner.txn, self.inner.env.events, &mut key, &mut data) };
         if rc == ffi::MDB_NOTFOUND {
             return Ok(None);
         }
@@ -397,7 +408,9 @@ mod tests {
         db.save_event(&event(1, PK1, 1, 10, vec![])).unwrap();
 
         let txn = db.begin_read_txn().unwrap();
-        let evt = txn.get_event(event(1, PK1, 1, 10, vec![]).id.short()).unwrap();
+        let evt = txn
+            .get_event(event(1, PK1, 1, 10, vec![]).id.short())
+            .unwrap();
         assert!(matches!(evt.0, EventBytes::Mapped { .. }));
         assert_eq!(evt.content.as_str(), "event 1");
     }

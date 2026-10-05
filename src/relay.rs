@@ -1,16 +1,16 @@
 use crate::{
+    Event, EventTemplate, Filter, ID, Kind, Tags, Timestamp,
     envelopes::Envelope,
     finalizer::Finalizer,
     helpers::{
-        extract_event_id, extract_key_from_sub_id, key_from_sub_id, sub_id_from_key,
-        SubscriptionKey,
+        SubscriptionKey, extract_event_id, extract_key_from_sub_id, key_from_sub_id,
+        sub_id_from_key,
     },
-    Event, EventTemplate, Filter, Kind, Tags, Timestamp, ID,
 };
 use dashmap::{DashMap, DashSet};
 use slotmap::{SecondaryMap, SlotMap};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use url::Url;
 
 #[cfg(target_arch = "wasm32")]
@@ -111,7 +111,7 @@ impl Relay {
         url: Url,
         mut on_close: Option<oneshot::Sender<String>>,
     ) -> Result<Self, ConnectError> {
-        use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+        use wasm_bindgen::{JsCast, JsValue, closure::Closure};
         use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 
         // create websocket
@@ -240,7 +240,7 @@ impl Relay {
         use tokio::time::interval;
         use tokio_tungstenite::{
             connect_async_tls_with_config,
-            tungstenite::{client::IntoClientRequest, Message},
+            tungstenite::{Message, client::IntoClientRequest},
         };
 
         let (write_sender, mut write_receiver) = mpsc::channel(1);
@@ -313,11 +313,7 @@ impl Relay {
                 let message = match conn_read.next().await {
                     Some(Ok(Message::Text(text))) => text.to_string(),
                     Some(Ok(Message::Ping(payload))) => {
-                        let _ = pong_writer
-                            .lock()
-                            .await
-                            .send(Message::Pong(payload))
-                            .await;
+                        let _ = pong_writer.lock().await.send(Message::Pong(payload)).await;
                         continue;
                     }
                     Some(Ok(Message::Close(frame))) => {
@@ -696,8 +692,7 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe() {
         let events = crate::server::testing::make_events(10);
-        let (url, server) =
-            crate::server::testing::spawn_relay_with_events("test", &events).await;
+        let (url, server) = crate::server::testing::spawn_relay_with_events("test", &events).await;
         let relay = Relay::connect(url.parse().unwrap(), None).await.unwrap();
 
         let filter = Filter {
@@ -732,8 +727,7 @@ mod tests {
     #[tokio::test]
     async fn test_dropping_a_clone_keeps_subscriptions() {
         let events = crate::server::testing::make_events(3);
-        let (url, server) =
-            crate::server::testing::spawn_relay_with_events("test", &events).await;
+        let (url, server) = crate::server::testing::spawn_relay_with_events("test", &events).await;
         let relay = Relay::connect(url.parse().unwrap(), None).await.unwrap();
 
         let mut sub = relay

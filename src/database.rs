@@ -278,7 +278,7 @@ where
 
     // index queries are more complex, they're fetched all at the same time and ordered dynamically
     index_queries: Vec<std::rc::Rc<IndexQuery>>,
-    initialized: bool,          // whether the cursors have been initialized
+    initialized: bool,         // whether the cursors have been initialized
     cursors: Vec<IndexCursor>, // in the beginning, one for each IndexQuery; these will be reordered many times.
     collectable: Vec<T::EventRef>,
     last_sent: Option<[u8; 32]>,
@@ -1029,7 +1029,12 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(evt.id, retrieved.id);
         assert_eq!(retrieved.content.as_str(), "event 1");
-        assert!(db.begin_read_txn().unwrap().has_event(evt.id.short()).unwrap());
+        assert!(
+            db.begin_read_txn()
+                .unwrap()
+                .has_event(evt.id.short())
+                .unwrap()
+        );
 
         assert!(matches!(
             db.save_event(&evt),
@@ -1037,7 +1042,12 @@ pub(crate) mod tests {
         ));
 
         db.delete_event(evt.id.short()).unwrap();
-        assert!(!db.begin_read_txn().unwrap().has_event(evt.id.short()).unwrap());
+        assert!(
+            !db.begin_read_txn()
+                .unwrap()
+                .has_event(evt.id.short())
+                .unwrap()
+        );
         assert_eq!(query(db, Filter::default()), Vec::<u8>::new());
 
         // deleting something that doesn't exist is fine
@@ -1204,11 +1214,13 @@ pub(crate) mod tests {
             ..kinds(&[0])
         };
 
-        db.replace_event(&event(7, PK2, 0, 60, vec![]), false).unwrap();
+        db.replace_event(&event(7, PK2, 0, 60, vec![]), false)
+            .unwrap();
         assert_eq!(query(db, profile.clone()), vec![7]);
 
         // older, ignored
-        db.replace_event(&event(8, PK2, 0, 40, vec![]), false).unwrap();
+        db.replace_event(&event(8, PK2, 0, 40, vec![]), false)
+            .unwrap();
         assert_eq!(query(db, profile.clone()), vec![7]);
 
         db.delete_event(event(4, PK2, 1, 300, vec![]).id.short())
@@ -1234,7 +1246,12 @@ pub(crate) mod tests {
         let held = txn.get_event(evt.id.short()).unwrap();
         db.delete_event(evt.id.short()).unwrap();
 
-        assert!(!db.begin_read_txn().unwrap().has_event(evt.id.short()).unwrap());
+        assert!(
+            !db.begin_read_txn()
+                .unwrap()
+                .has_event(evt.id.short())
+                .unwrap()
+        );
         assert_eq!(held.content.as_str(), "event 3");
     }
 }
