@@ -23,6 +23,8 @@ pub mod timestamp;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod addresses;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod management;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod relay_information;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
