@@ -141,11 +141,11 @@ impl Pointer {
             }
             Pointer::Event(p) => {
                 let mut tag = vec!["e".to_string(), p.id.to_hex()];
-                if !p.relays.is_empty() {
-                    tag.push(p.relays[0].clone());
-                    if let Some(author) = &p.author {
-                        tag.push(author.to_hex());
-                    }
+                if !p.relays.is_empty() || p.author.is_some() {
+                    tag.push(p.relays.first().cloned().unwrap_or_default());
+                }
+                if let Some(author) = &p.author {
+                    tag.push(author.to_hex());
                 }
                 tag
             }

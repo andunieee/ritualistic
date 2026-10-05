@@ -98,21 +98,18 @@ impl Profile {
 
         match (&self.event, &profile.event) {
             (None, Some(_)) => *self = profile,
-            (Some(old), Some(new)) => {
-                if new.created_at > old.created_at {
-                    *self = profile;
-                }
-            }
+            (Some(old), Some(new)) if new.created_at > old.created_at => *self = profile,
             _ => {}
         }
     }
 
     pub fn render_name(&self) -> String {
         if let Some(name) = &self.metadata.name {
-            if name.len() < 21 {
+            // count chars, not bytes, otherwise we'd panic slicing in the middle of a multibyte char
+            if name.chars().count() < 21 {
                 name.to_owned()
             } else {
-                format!("{}…", &name[0..20])
+                format!("{}…", name.chars().take(20).collect::<String>())
             }
         } else {
             let npub = self.pubkey.to_npub();
@@ -191,6 +188,18 @@ mod tests {
         assert_eq!(parsed.metadata.name, metadata.name);
         assert_eq!(parsed.metadata.about, metadata.about);
         assert_eq!(parsed.metadata.banner, metadata.banner);
+    }
+
+    #[test]
+    fn test_render_long_multibyte_name() {
+        let mut profile = Profile::blank_from_pubkey(
+            crate::PubKey::from_str(
+                "8be4898b4a75dd6a5d0b6a96870afc63375c3e8f9b38885aabd049450b2588f8",
+            )
+            .unwrap(),
+        );
+        profile.metadata.name = Some("ççççççççççççççççççççççççç".to_string());
+        assert_eq!(profile.render_name(), "çççççççççççççççççççç…");
     }
 
     #[test]

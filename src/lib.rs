@@ -5,9 +5,6 @@
 //! this library provides types and utilities for working with the Nostr protocol,
 //! including events, filters, relays, and connections.
 
-#![feature(test)]
-#![feature(new_range_api)]
-
 pub mod bunker_client;
 pub mod codes;
 pub mod envelopes;
@@ -31,7 +28,11 @@ pub mod relay_information;
 pub mod server;
 
 mod btree;
-mod database;
+#[cfg(all(feature = "lmdb", not(target_arch = "wasm32")))]
+mod lmdb;
+#[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
+mod redb;
+pub mod database;
 mod finalizer;
 mod network;
 mod relay;
@@ -42,6 +43,10 @@ mod util;
 // re-export commonly used types
 pub use btree::BTreeEventDatabase;
 pub use database::EventDatabase;
+#[cfg(all(feature = "lmdb", not(target_arch = "wasm32")))]
+pub use lmdb::LMDBEventDatabase;
+#[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
+pub use redb::RedbEventDatabase;
 pub use event::{ArchivedEvent, Event};
 pub use event_template::EventTemplate;
 pub use filter::{Filter, TagQuery};

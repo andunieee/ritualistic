@@ -77,37 +77,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch() {
-        let test_cases = vec![
-            ("wss://nostr.wine", false, "wss://nostr.wine/"),
-            ("https://nostr.land", false, "wss://nostr.land/"),
-            ("nostr.wine", false, "wss://nostr.wine/"),
-            ("relay.damus.io", false, "wss://relay.damus.io/"),
-            ("https://nos.lol", false, "wss://nos.lol/"),
-            ("wss://relay.primal.net", false, "wss://relay.primal.net/"),
-            ("wlenwqkeqwe.asjdaskd", true, "wss://wlenwqkeqwe.asjdaskd/"),
-            ("bligblag", true, "wss://bligblag/"),
-        ];
+        let (url, server) =
+            crate::server::testing::spawn_relay_with_events("local relay", &[]).await;
 
-        for (input_url, expect_error, expected_url) in test_cases {
-            let result = fetch(input_url).await;
+        // ws:// gets turned into http://
+        let info = fetch(&url).await.unwrap();
+        assert_eq!(info.url, format!("{}/", url));
+        assert_eq!(info.name, "local relay");
 
-            if expect_error {
-                assert!(result.is_err(), "expected error for URL: {}", input_url);
-                // even on error, we should get the URL back
-                if let Err(RelayInformationError::Http(_)) = result {
-                    // this is expected for invalid domains
-                }
-            } else {
-                match result {
-                    Ok(info) => {
-                        assert_eq!(info.url, expected_url);
-                        // name might be empty for some relays, that's ok
-                    }
-                    Err(e) => {
-                        panic!("warning: failed to fetch {}: {}", input_url, e);
-                    }
-                }
-            }
-        }
+        // and so does a missing scheme
+        let info = fetch(url.trim_start_matches("ws://")).await.unwrap();
+        assert_eq!(info.name, "local relay");
+
+        server.abort();
+
+        // nothing listening there anymore
+        assert!(fetch(&url).await.is_err());
     }
 }

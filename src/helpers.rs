@@ -53,23 +53,18 @@ pub fn extract_key_from_sub_id(json_str: &str) -> Option<SubscriptionKey> {
     let quote_start = remaining.find('"')?;
     let remaining = &remaining[quote_start + 1..];
 
-    // take the 8 hex bytes that will NECESSARILY be here because we created this
-    Some(key_from_sub_id(remaining))
+    // the subscription id should start with the 8 hex bytes we put there, but the relay can send anything
+    key_from_sub_id(remaining)
 }
 
-pub fn key_from_sub_id(sub_id: &str) -> SubscriptionKey {
-    let buf = &sub_id[..8 * 2];
+pub fn key_from_sub_id(sub_id: &str) -> Option<SubscriptionKey> {
+    let buf = sub_id.get(..8 * 2)?;
 
     // do the slotmap thing
-    let key_data = u64::from_le_bytes(
-        lowercase_hex::decode(buf)
-            .expect("subscription id hex prefix broken")
-            .try_into()
-            .unwrap(),
-    );
+    let key_data = u64::from_le_bytes(lowercase_hex::decode_to_array::<_, 8>(buf).ok()?);
     let key = slotmap::KeyData::from_ffi(key_data);
 
-    SubscriptionKey(key)
+    Some(SubscriptionKey(key))
 }
 
 /// extract event ID from JSON string
@@ -78,7 +73,7 @@ pub fn extract_event_id(json_str: &str) -> Option<crate::ID> {
     let remaining = &json_str[start + 4..];
 
     let quote_start = remaining.find('"')?;
-    let id_str = &remaining[quote_start + 1..quote_start + 1 + 64];
+    let id_str = remaining.get(quote_start + 1..quote_start + 1 + 64)?;
 
     crate::ID::from_hex(id_str).ok()
 }
@@ -89,7 +84,7 @@ pub fn extract_event_pubkey(json_str: &str) -> Option<crate::PubKey> {
     let remaining = &json_str[start + 8..];
 
     let quote_start = remaining.find('"')?;
-    let pk_str = &remaining[quote_start + 1..quote_start + 1 + 64];
+    let pk_str = remaining.get(quote_start + 1..quote_start + 1 + 64)?;
 
     pk_str.parse().ok()
 }
@@ -134,7 +129,7 @@ pub fn extract_timestamp(json_str: &str) -> Option<crate::Timestamp> {
     }
 
     let num_str = &remaining[..num_end];
-    num_str.parse::<i64>().ok().map(crate::Timestamp::from)
+    num_str.parse::<u32>().ok().map(crate::Timestamp)
 }
 
 /// check if a URL is a valid relay URL (ws:// or wss://)
@@ -145,13 +140,10 @@ pub fn is_valid_relay_url(url_str: &str) -> bool {
     }
 }
 
-extern crate test;
-
 #[cfg(test)]
 mod tests {
 
     use super::*;
-    use test::Bencher;
 
     #[test]
     fn test_sub_id_and_key() {
@@ -185,6 +177,11 @@ mod tests {
             ),
             None,
         );
+
+        // relays can send garbage, we must not panic on it
+        assert_eq!(key_from_sub_id("x"), None);
+        assert_eq!(key_from_sub_id("zzzzzzzzzzzzzzzzzz"), None);
+        assert_eq!(extract_key_from_sub_id(r#"["EVENT","é",{}]"#), None);
     }
 
     #[test]
@@ -208,21 +205,9 @@ mod tests {
                 0x80, 0x7e, 0x49, 0xf5,
             ]))
         );
-    }
 
-    #[bench]
-    fn bench_get_id_serde(b: &mut Bencher) {
-        let eventj = r#"{"kind":1,"pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c","id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"}"#;
-        b.iter(|| {
-            serde_json::from_str::<crate::Event>(eventj)
-                .map(|evt| evt.id)
-                .ok()
-        });
-    }
-
-    #[bench]
-    fn bench_get_id_manual(b: &mut Bencher) {
-        let eventj = r#"{"kind":1,"pubkey":"37a4aef1f8423ca076e4b7d99a8cabff40ddb8231f2a9f01081f15d7fa65c1ba","created_at":1750711742,"tags":[],"content":"hello world","sig":"a1ecbf1636f5e752f1b918a86b065a8031b1387f0785f0ca19b84cc155d7937fece1f3ae53b79d347fbce5555a0f2da8db96334cab154f8d92300f8c1936710c","id":"9429b2e11640bfd86971f0d9f7435199b57e121a363213df11d5b426807e49f5"}"#;
-        b.iter(|| extract_event_id(eventj));
+        assert_eq!(extract_event_id(r#"{"id":"abc"}"#), None);
+        assert_eq!(extract_event_id(r#"{"id":"ééééééééééééééééééééééééééééééééé"}"#), None);
+        assert_eq!(extract_event_pubkey(r#"{"pubkey":"abc"}"#), None);
     }
 }

@@ -258,32 +258,42 @@ impl From<Kind> for u16 {
     }
 }
 
-impl From<u32> for Kind {
-    fn from(value: u32) -> Self {
-        Self(value as u16)
+impl TryFrom<u32> for Kind {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
     }
 }
 
-impl From<u64> for Kind {
-    fn from(value: u64) -> Self {
-        Self(value as u16)
+impl TryFrom<u64> for Kind {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
     }
 }
 
-impl From<i32> for Kind {
-    fn from(value: i32) -> Self {
-        Self(value as u16)
+impl TryFrom<i32> for Kind {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
     }
 }
 
-impl From<i64> for Kind {
-    fn from(value: i64) -> Self {
-        Self(value as u16)
+impl TryFrom<i64> for Kind {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
     }
 }
 
-impl From<usize> for Kind {
-    fn from(value: usize) -> Self {
-        Self(value as u16)
+impl TryFrom<usize> for Kind {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
     }
 }

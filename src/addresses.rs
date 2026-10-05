@@ -29,9 +29,9 @@ pub struct WellKnownResponse {
     pub relays: Option<std::collections::HashMap<String, Vec<String>>>,
 }
 
-lazy_static::lazy_static! {
-    static ref REGEX: regex::Regex = regex::Regex::new(r"^(?:([\w.+-]+)@)?([\w_-]+(\.[\w_-]+)+)$").unwrap();
-}
+static REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^(?:([\w.+-]+)@)?([\w_-]+(\.[\w_-]+)+)$").unwrap()
+});
 
 /// check if an identifier is valid according to address format
 pub fn is_valid_identifier(input: &str) -> bool {
@@ -61,11 +61,18 @@ pub fn parse_identifier(fullname: &str) -> Result<(String, String)> {
 /// query a identifier and return the profile pointer
 pub async fn query_identifier(fullname: &str) -> Result<crate::ProfilePointer> {
     let (result, name) = fetch(fullname).await?;
+    pointer_from_response(&result, &name)
+}
 
+/// get the profile pointer for a name from a well-known response
+pub fn pointer_from_response(
+    result: &WellKnownResponse,
+    name: &str,
+) -> Result<crate::ProfilePointer> {
     let pubkey_hex = result
         .names
-        .get(&name)
-        .ok_or_else(|| AddressError::NoEntry(name.clone()))?;
+        .get(name)
+        .ok_or_else(|| AddressError::NoEntry(name.to_string()))?;
 
     let pubkey: crate::PubKey = pubkey_hex
         .parse()
@@ -176,7 +183,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_pointer_from_response() {
+        let response: WellKnownResponse = serde_json::from_str(
+            r#"{
+                "names": {
+                    "mike": "ee11a5dff40c19a555f41fe42b48f00e618c91225622ae37b6c2bb67b76c4e49",
+                    "_": "e88a691e98d9987c964521dff60025f60700378a4879180dcbbb4a5027850411",
+                    "broken": "xyz"
+                },
+                "relays": {
+                    "ee11a5dff40c19a555f41fe42b48f00e618c91225622ae37b6c2bb67b76c4e49": ["wss://nostrue.com/"]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            pointer_from_response(&response, "mike").unwrap(),
+            crate::ProfilePointer {
+                pubkey: "ee11a5dff40c19a555f41fe42b48f00e618c91225622ae37b6c2bb67b76c4e49"
+                    .parse()
+                    .unwrap(),
+                relays: vec!["wss://nostrue.com/".to_string()],
+            },
+        );
+        assert_eq!(
+            pointer_from_response(&response, "_").unwrap().relays,
+            Vec::<String>::new()
+        );
+        assert!(matches!(
+            pointer_from_response(&response, "nobody"),
+            Err(AddressError::NoEntry(_))
+        ));
+        assert!(matches!(
+            pointer_from_response(&response, "broken"),
+            Err(AddressError::InvalidPublicKey(_))
+        ));
+    }
+
+    // hits the network, run with `cargo test -- --ignored`
     #[tokio::test]
+    #[ignore]
     async fn test_fetch_name() {
         assert_eq!(
             query_identifier("mike@mikedilger.com").await.unwrap(),

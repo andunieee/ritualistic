@@ -7,8 +7,8 @@ const MAX_PLAINTEXT_SIZE: usize = 65535;
 
 #[derive(thiserror::Error, Debug)]
 pub enum EncryptError {
-    #[error("plaintext too large")]
-    PlaintextTooLarge,
+    #[error("plaintext must be between 1 and 65535 bytes")]
+    InvalidPlaintextSize,
 }
 
 pub fn encrypt(
@@ -22,7 +22,7 @@ pub fn encrypt(
     let plain = plaintext.as_bytes();
     let size = plain.len();
     if size == 0 || size > MAX_PLAINTEXT_SIZE {
-        return Err(EncryptError::PlaintextTooLarge);
+        return Err(EncryptError::InvalidPlaintextSize);
     }
 
     let padded_len = calc_padded_len(size);
@@ -64,6 +64,9 @@ pub enum DecryptError {
 
     #[error("invalid padding")]
     InvalidPadding,
+
+    #[error("plaintext is not valid utf-8")]
+    InvalidUtf8,
 }
 
 pub fn decrypt(
@@ -96,11 +99,13 @@ pub fn decrypt(
 
     let (cc20key, cc20nonce, hmac_key) = message_keys(conversation_key, nonce);
 
-    let expected_mac = sha256_hmac(&hmac_key, ciphertext, nonce);
-
-    if given_mac != expected_mac.as_slice() {
-        return Err(DecryptError::InvalidHmac);
-    }
+    // constant-time comparison
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&hmac_key)
+        .expect("hmac can take key of any size so this never fails");
+    mac.update(&nonce);
+    mac.update(ciphertext);
+    mac.verify_slice(given_mac)
+        .map_err(|_| DecryptError::InvalidHmac)?;
 
     let mut padded = ciphertext.to_vec();
     let mut cipher = chacha20::ChaCha20::new(&cc20key.into(), &cc20nonce.into());
@@ -119,7 +124,7 @@ pub fn decrypt(
         return Err(DecryptError::InvalidPadding);
     }
 
-    Ok(String::from_utf8_lossy(unpadded).to_string())
+    String::from_utf8(unpadded.to_vec()).map_err(|_| DecryptError::InvalidUtf8)
 }
 
 pub fn generate_conversation_key(pubkey: &crate::PubKey, sk: &crate::SecretKey) -> [u8; 32] {
@@ -177,15 +182,13 @@ fn hkdf_expand_into(pseudorandomkey: &[u8], info: &[u8], iterations: usize) -> V
     let mut hmac = hmac::Hmac::<sha2::Sha256>::new_from_slice(pseudorandomkey)
         .expect("hmac can take keys of any size so this never fails");
 
-    let mut counter = 1u8;
-    for _ in 0..iterations {
+    for counter in (1u8..).take(iterations) {
         hmac.update(info);
         hmac.update(&[counter]);
 
         let val = hmac.finalize().into_bytes();
 
         // prepare next iteration
-        counter += 1;
         hmac = hmac::Hmac::<sha2::Sha256>::new_from_slice(pseudorandomkey)
             .expect("hmac can take keys of any size so this never fails");
         hmac.update(&val);

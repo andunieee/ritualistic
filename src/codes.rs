@@ -18,7 +18,7 @@ pub enum DecodeError {
     #[error("unknown prefix {0}")]
     UnknownPrefix(bech32::Hrp),
 
-    #[error("malformed code {0}: {0}")]
+    #[error("malformed code {0}: {1}")]
     Malformed(bech32::Hrp, String),
 
     #[error("although valid, this code cannot be converted to a pointer")]
@@ -89,10 +89,9 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
             let mut pubkey = None;
 
             while curr < data.len() {
-                let (typ, value) = read_tlv_entry(&data[curr..]);
-                if value.is_empty() {
+                let Some((typ, value)) = read_tlv_entry(&data[curr..]) else {
                     break;
-                }
+                };
 
                 curr += 2 + value.len();
 
@@ -135,10 +134,9 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
             let mut id = None;
 
             while curr < data.len() {
-                let (typ, value) = read_tlv_entry(&data[curr..]);
-                if value.is_empty() {
+                let Some((typ, value)) = read_tlv_entry(&data[curr..]) else {
                     break;
-                }
+                };
                 curr += 2 + value.len();
 
                 match typ {
@@ -203,10 +201,9 @@ pub fn decode(bech32_string: &str) -> Result<DecodeResult, DecodeError> {
             let mut relays = Vec::new();
 
             while curr < data.len() {
-                let (typ, value) = read_tlv_entry(&data[curr..]);
-                if value.is_empty() {
+                let Some((typ, value)) = read_tlv_entry(&data[curr..]) else {
                     break;
-                }
+                };
                 curr += 2 + value.len();
 
                 match typ {
@@ -284,7 +281,12 @@ pub fn encode_nprofile(pk: &crate::PubKey, relays: &[String]) -> String {
 }
 
 /// encode an event pointer as nevent
-pub fn encode_nevent(id: &crate::ID, relays: &[String], author: Option<&crate::PubKey>) -> String {
+pub fn encode_nevent(
+    id: &crate::ID,
+    relays: &[String],
+    author: Option<&crate::PubKey>,
+    kind: Option<crate::Kind>,
+) -> String {
     let mut buf = Vec::new();
     write_tlv_entry(&mut buf, TLV_DEFAULT, id.as_bytes());
 
@@ -294,6 +296,10 @@ pub fn encode_nevent(id: &crate::ID, relays: &[String], author: Option<&crate::P
 
     if let Some(author) = author {
         write_tlv_entry(&mut buf, TLV_AUTHOR, author.as_bytes());
+    }
+
+    if let Some(kind) = kind {
+        write_tlv_entry(&mut buf, TLV_KIND, &(kind.0 as u32).to_be_bytes());
     }
 
     bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked("nevent"), &buf)
@@ -333,7 +339,7 @@ pub fn encode_pointer(pointer: &crate::Pointer) -> String {
                 encode_nprofile(&p.pubkey, &p.relays)
             }
         }
-        crate::Pointer::Event(p) => encode_nevent(&p.id, &p.relays, p.author.as_ref()),
+        crate::Pointer::Event(p) => encode_nevent(&p.id, &p.relays, p.author.as_ref(), p.kind),
         crate::Pointer::Address(p) => encode_naddr(&p.pubkey, p.kind, &p.identifier, &p.relays),
     }
 }
@@ -352,21 +358,22 @@ pub fn to_pointer(code: &str) -> Result<crate::Pointer, DecodeError> {
     }
 }
 
-/// read a TLV entry from data
-fn read_tlv_entry(data: &[u8]) -> (u8, Vec<u8>) {
+/// read a TLV entry from data, returns None if the data is truncated
+/// (zero-length values are valid, e.g. an naddr with an empty "d" identifier)
+fn read_tlv_entry(data: &[u8]) -> Option<(u8, Vec<u8>)> {
     if data.len() < 2 {
-        return (0, Vec::new());
+        return None;
     }
 
     let typ = data[0];
     let length = data[1] as usize;
 
     if data.len() < 2 + length {
-        return (typ, Vec::new());
+        return None;
     }
 
     let value = data[2..2 + length].to_vec();
-    (typ, value)
+    Some((typ, value))
 }
 
 /// write a TLV entry to buffer
@@ -415,6 +422,38 @@ mod tests {
             assert_eq!(decoded_sk.as_bytes(), sk.as_bytes());
         } else {
             panic!("Expected SecretKey result");
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_naddr_empty_identifier() {
+        let pk: PubKey = "d91191e30e00444b942c0e82cad470b32af171764c2275bee0bd99377efd4075"
+            .parse()
+            .unwrap();
+        let naddr = encode_naddr(&pk, Kind(30023), "", &["wss://nos.lol".to_string()]);
+
+        match decode(&naddr).unwrap() {
+            DecodeResult::Address(addr) => {
+                assert_eq!(addr.pubkey, pk);
+                assert_eq!(addr.kind, Kind(30023));
+                assert_eq!(addr.identifier, "");
+                assert_eq!(addr.relays, vec!["wss://nos.lol".to_string()]);
+            }
+            _ => panic!("expected Address result"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_nevent_with_kind() {
+        let id = ID::from_bytes([7; 32]);
+        let nevent = encode_nevent(&id, &[], None, Some(Kind(1111)));
+
+        match decode(&nevent).unwrap() {
+            DecodeResult::Event(ptr) => {
+                assert_eq!(ptr.id, id);
+                assert_eq!(ptr.kind, Some(Kind(1111)));
+            }
+            _ => panic!("expected Event result"),
         }
     }
 

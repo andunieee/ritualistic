@@ -78,7 +78,14 @@ pub async fn start(
 ) -> Result<(), StartError> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("relay listening on {}", addr);
+    serve(ri, listener).await
+}
 
+/// serve the relay on an already bound listener
+pub async fn serve(
+    ri: std::sync::Arc<RelayInternals>,
+    listener: tokio::net::TcpListener,
+) -> Result<(), StartError> {
     async fn service(
         req: hyper::Request<hyper::body::Incoming>,
         ri: std::sync::Arc<RelayInternals>,
@@ -135,6 +142,11 @@ pub async fn start(
                                                                 &event,
                                                             )
                                                             .await;
+                                                        }
+                                                        Ok(crate::envelopes::Envelope::Close {
+                                                            ..
+                                                        }) => {
+                                                            // nothing to do, we don't keep subscriptions open
                                                         }
                                                         Ok(envelope) => {
                                                             let notice = serde_json::json!([
@@ -382,8 +394,7 @@ mod tests {
     use crate::relay::Occurrence;
     use crate::relay_information::RelayInformationDocument;
     use crate::*;
-    use std::{cmp::min, net::SocketAddr};
-    use tokio::time::{Duration, sleep};
+    use std::cmp::min;
 
     struct InMemoryRelay {
         events: Vec<Event>,
@@ -495,7 +506,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_endpoint() {
-        let addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
         let relay = std::sync::Arc::new(RelayInternals {
             info: RelayInformationDocument {
                 name: "ksowknex".to_string(),
@@ -507,15 +519,12 @@ mod tests {
         });
 
         // start server in background
-        let server_handle = tokio::spawn(async move { start(relay, addr).await });
-
-        // give server time to start
-        sleep(Duration::from_millis(100)).await;
+        let server_handle = tokio::spawn(serve(relay, listener));
 
         // request metadata
         let client = reqwest::Client::new();
         let response = client
-            .get("http://127.0.0.1:8081/")
+            .get(format!("http://{}/", addr))
             .header("accept", "application/nostr+json")
             .send()
             .await
@@ -537,7 +546,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_relay_connect_publish_subscribe() {
-        let addr: SocketAddr = "127.0.0.1:8082".parse().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
         let relay_internals = std::sync::Arc::new(RelayInternals {
             info: RelayInformationDocument {
                 name: "test-relay".to_string(),
@@ -549,13 +559,10 @@ mod tests {
         });
 
         // start server in background
-        let server_handle = tokio::spawn(async move { start(relay_internals, addr).await });
-
-        // give server time to start
-        sleep(Duration::from_millis(100)).await;
+        let server_handle = tokio::spawn(serve(relay_internals, listener));
 
         // connect to the relay
-        let relay_url = "ws://127.0.0.1:8082".to_string().parse().unwrap();
+        let relay_url = format!("ws://{}", addr).parse().unwrap();
         let relay = Relay::connect(relay_url, None).await.unwrap();
 
         // create and publish an event
@@ -619,9 +626,14 @@ mod tests {
     #[tokio::test]
     async fn test_pool_with_filtered_relays() {
         // start three relays with different filtering logic
-        let even_addr: SocketAddr = "127.0.0.1:8083".parse().unwrap();
-        let odd_addr: SocketAddr = "127.0.0.1:8084".parse().unwrap();
-        let multiple_of_three_addr: SocketAddr = "127.0.0.1:8085".parse().unwrap();
+        let even_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let odd_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let multiple_of_three_listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let even_url = format!("ws://{}", even_listener.local_addr().unwrap());
+        let odd_url = format!("ws://{}", odd_listener.local_addr().unwrap());
+        let multiple_of_three_url =
+            format!("ws://{}", multiple_of_three_listener.local_addr().unwrap());
 
         let even_relay = std::sync::Arc::new(RelayInternals {
             info: RelayInformationDocument {
@@ -654,22 +666,17 @@ mod tests {
         });
 
         // start servers in background
-        let even_handle = tokio::spawn(async move { start(even_relay, even_addr).await });
-        let odd_handle = tokio::spawn(async move { start(odd_relay, odd_addr).await });
+        let even_handle = tokio::spawn(serve(even_relay, even_listener));
+        let odd_handle = tokio::spawn(serve(odd_relay, odd_listener));
         let multiple_of_three_handle =
-            tokio::spawn(
-                async move { start(multiple_of_three_relay, multiple_of_three_addr).await },
-            );
-
-        // give servers time to start
-        sleep(Duration::from_millis(200)).await;
+            tokio::spawn(serve(multiple_of_three_relay, multiple_of_three_listener));
 
         // create pool and relay urls
         let mut pool = Network::new();
         let relay_urls = vec![
-            "ws://127.0.0.1:8083".to_string(),
-            "ws://127.0.0.1:8084".to_string(),
-            "ws://127.0.0.1:8085".to_string(),
+            even_url.clone(),
+            odd_url.clone(),
+            multiple_of_three_url.clone(),
         ];
 
         // create events with different timestamps
@@ -712,7 +719,7 @@ mod tests {
         // query even relay (should have events with timestamps: 100, 102, 104, 106, 108)
         let even_events = pool
             .query(
-                vec!["ws://127.0.0.1:8083".to_string()],
+                vec![even_url.clone()],
                 filter.clone(),
                 SubscriptionOptions::default(),
             )
@@ -729,7 +736,7 @@ mod tests {
         // query odd relay (should have events with timestamps: 101, 103, 105, 107, 109)
         let odd_events = pool
             .query(
-                vec!["ws://127.0.0.1:8084".to_string()],
+                vec![odd_url.clone()],
                 filter.clone(),
                 SubscriptionOptions::default(),
             )
@@ -746,7 +753,7 @@ mod tests {
         // query multiple of three relay (should have events with timestamps: 102, 105, 108)
         let multiple_of_three_events = pool
             .query(
-                vec!["ws://127.0.0.1:8085".to_string()],
+                vec![multiple_of_three_url.clone()],
                 filter.clone(),
                 SubscriptionOptions::default(),
             )
@@ -787,5 +794,83 @@ mod tests {
         even_handle.abort();
         odd_handle.abort();
         multiple_of_three_handle.abort();
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+    use crate::EventDatabase;
+
+    /// a relay backed by the in-memory database
+    #[derive(Default)]
+    pub(crate) struct DatabaseRelay {
+        pub(crate) db: crate::BTreeEventDatabase,
+    }
+
+    impl CustomRelay for DatabaseRelay {
+        fn handle_event(&mut self, event: &crate::Event) -> std::result::Result<(), String> {
+            self.db.save_event(event).map_err(|err| err.to_string())
+        }
+
+        fn handle_request(
+            &mut self,
+            filter: &crate::Filter,
+        ) -> std::result::Result<Vec<crate::Event>, String> {
+            Ok(self
+                .db
+                .query_events(&mut [filter.clone()])
+                .map_err(|err| err.to_string())?
+                .map(|event| {
+                    rkyv::deserialize::<crate::Event, rkyv::rancor::Error>(&*event)
+                        .expect("archived type must deserialize")
+                })
+                .collect())
+        }
+    }
+
+    /// start a relay on a random local port, returns its url and the server task
+    pub(crate) async fn spawn_relay(
+        name: &str,
+        custom_relay: impl CustomRelay + 'static,
+    ) -> (String, tokio::task::JoinHandle<Result<(), StartError>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let ri = std::sync::Arc::new(RelayInternals {
+            info: crate::relay_information::RelayInformationDocument {
+                name: name.to_string(),
+                ..Default::default()
+            },
+            custom_relay: Box::new(tokio::sync::Mutex::new(custom_relay)),
+        });
+        (url, tokio::spawn(serve(ri, listener)))
+    }
+
+    /// a relay preloaded with the given events
+    pub(crate) async fn spawn_relay_with_events(
+        name: &str,
+        events: &[crate::Event],
+    ) -> (String, tokio::task::JoinHandle<Result<(), StartError>>) {
+        let relay = DatabaseRelay::default();
+        for event in events {
+            relay.db.save_event(event).unwrap();
+        }
+        spawn_relay(name, relay).await
+    }
+
+    /// generate signed kind:1 events with sequential timestamps
+    pub(crate) fn make_events(count: u32) -> Vec<crate::Event> {
+        let sk = crate::SecretKey::generate();
+        (0..count)
+            .map(|i| {
+                crate::EventTemplate {
+                    created_at: crate::Timestamp(1_000_000 + i),
+                    kind: crate::Kind(1),
+                    tags: crate::Tags::default(),
+                    content: format!("event {}", i),
+                }
+                .finalize(&sk)
+            })
+            .collect()
     }
 }

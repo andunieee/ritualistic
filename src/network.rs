@@ -9,9 +9,13 @@ pub enum EnsureError {
     Connect(#[from] crate::relay::ConnectError),
 }
 
+type RelaySlot = std::sync::Arc<tokio::sync::OnceCell<crate::Relay>>;
+
 #[derive(Debug)]
 pub struct Network {
-    relays: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::Relay>>>,
+    // each relay gets a slot that is filled once the connection succeeds, so different relays can be
+    // connected to concurrently while concurrent callers for the same relay wait for the same connection
+    relays: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, RelaySlot>>>,
 }
 
 pub struct PublishResult {
@@ -46,7 +50,7 @@ impl Network {
             .lock()
             .await
             .get(normalized_url.as_str())
-            .cloned()
+            .and_then(|slot| slot.get().cloned())
     }
 
     /// get or create a relay connection to the given url
@@ -56,40 +60,55 @@ impl Network {
     {
         let normalized_url = crate::normalize_url(url.as_ref())?;
 
-        // check if relay already exists
-        let mut relay_map = self.relays.lock().await;
-        if let Some(relay) = relay_map.get(normalized_url.as_str()) {
-            return Ok(relay.clone());
-        }
+        // get the slot for this relay, only holding the lock for a moment
+        let slot = self
+            .relays
+            .lock()
+            .await
+            .entry(normalized_url.to_string())
+            .or_default()
+            .clone();
 
-        // create new relay connection
-        let (on_close, handle_close) = tokio::sync::oneshot::channel::<String>();
-        let nm_ = normalized_url.clone();
-        let relay_map_on_close = self.relays.clone();
-        tokio::spawn(async move {
-            match handle_close.await {
-                Ok(reason) => {
-                    log::info!("[{}] relay connection closed: {}", nm_.as_str(), reason);
+        let result = slot
+            .get_or_try_init(|| async {
+                let (on_close, handle_close) = tokio::sync::oneshot::channel::<String>();
+                let relay = crate::Relay::connect(normalized_url.clone(), Some(on_close)).await?;
 
-                    // the relay connection will be dropped from the map if it disconnects
-                    relay_map_on_close.lock().await.remove(nm_.as_str());
+                let nm_ = normalized_url.clone();
+                let slot_ = slot.clone();
+                let relay_map_on_close = self.relays.clone();
+                tokio::spawn(async move {
+                    match handle_close.await {
+                        Ok(reason) => {
+                            log::info!("[{}] relay connection closed: {}", nm_.as_str(), reason);
+                        }
+                        Err(err) => {
+                            log::info!(
+                                "got an error from the handle_close oneshot for {}: {}",
+                                nm_.as_str(),
+                                err
+                            );
+                        }
+                    }
+
+                    // the relay connection will be dropped from the map when it disconnects
+                    remove_slot(&relay_map_on_close, nm_.as_str(), &slot_).await;
+                });
+
+                Ok::<_, crate::relay::ConnectError>(relay)
+            })
+            .await
+            .cloned();
+
+        match result {
+            Ok(relay) => Ok(relay),
+            Err(err) => {
+                // don't keep empty slots around for relays we failed to connect to
+                if !slot.initialized() {
+                    remove_slot(&self.relays, normalized_url.as_str(), &slot).await;
                 }
-                Err(err) => {
-                    log::info!(
-                        "got an error from the handle_close oneshot for {}: {}",
-                        nm_.as_str(),
-                        err
-                    );
-                }
+                Err(EnsureError::Connect(err))
             }
-        });
-
-        match crate::Relay::connect(normalized_url.to_owned(), Some(on_close)).await {
-            Ok(relay) => {
-                relay_map.insert(normalized_url.to_string(), relay.clone());
-                Ok(relay)
-            }
-            Err(err) => Err(EnsureError::Connect(err)),
         }
     }
 
@@ -148,7 +167,14 @@ impl Network {
         S: AsRef<str>,
         T: AsRef<[S]>,
     {
-        let mut events = Vec::with_capacity(filter.limit.unwrap_or(500) * urls.as_ref().len() / 2);
+        let mut events = Vec::with_capacity(
+            filter
+                .limit
+                .unwrap_or(500)
+                .min(1000)
+                .saturating_mul(urls.as_ref().len())
+                / 2,
+        );
 
         let mut occurrences = self.subscribe(urls, filter, subscription_options).await;
         while let Some(occ) = occurrences.recv().await {
@@ -199,6 +225,9 @@ impl Network {
 
             let url_owned = url.as_ref().to_owned();
             tokio::spawn(async move {
+                // each relay must only count once towards the eose_counter
+                let mut counted_eose = false;
+
                 if let Ok(relay) = pool.ensure_relay(&url_owned).await {
                     let mut sub = relay.subscribe(filter, opts).await;
                     while let Some(occ) = sub.recv().await {
@@ -214,6 +243,7 @@ impl Network {
                                 }
                             }
                             crate::relay::Occurrence::Eose => {
+                                counted_eose = true;
                                 if eose_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
                                     == 1
                                     && !eosed.swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -229,7 +259,8 @@ impl Network {
                 }
 
                 // if we are here, it means ensure_relay or subscribe failed or the subscription ended.
-                if eose_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1
+                if !counted_eose
+                    && eose_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1
                     && !eosed.swap(true, std::sync::atomic::Ordering::SeqCst)
                     && tx.send(Occurrence::EOSE).await.is_err()
                 {
@@ -250,6 +281,21 @@ impl Network {
     }
 }
 
+/// remove a slot from the map, but only if it wasn't replaced by a newer one in the meantime
+async fn remove_slot(
+    relays: &tokio::sync::Mutex<std::collections::HashMap<String, RelaySlot>>,
+    url: &str,
+    slot: &RelaySlot,
+) {
+    let mut relay_map = relays.lock().await;
+    if relay_map
+        .get(url)
+        .is_some_and(|current| std::sync::Arc::ptr_eq(current, slot))
+    {
+        relay_map.remove(url);
+    }
+}
+
 // we can clone the pool because its fields are just arcs
 impl Clone for Network {
     fn clone(&self) -> Self {
@@ -262,20 +308,24 @@ impl Clone for Network {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::testing::{make_events, spawn_relay_with_events};
     use crate::*;
     use std::collections::HashSet;
 
     #[tokio::test]
     async fn test_pool_subscribe_multiple() {
         let pool = Network::new();
+        let events = make_events(20);
 
-        let urls = vec![
-            "wss://nos.lol".to_string(),
-            "wss://nostr.wine".to_string(),
-            "wss://nostr.mom".to_string(),
-            "wss://relay.damus.io".to_string(),
-            "wss://relay.primal.net".to_string(),
-        ];
+        // each relay has an overlapping window of events
+        let mut urls = Vec::new();
+        let mut servers = Vec::new();
+        for i in 0..5 {
+            let (url, server) =
+                spawn_relay_with_events("test", &events[i * 3..i * 3 + 6]).await;
+            urls.push(url);
+            servers.push(server);
+        }
 
         let filter = Filter {
             kinds: Some(vec![Kind(1), Kind(1111)]),
@@ -283,9 +333,9 @@ mod tests {
             ..Default::default()
         };
 
-        let events = pool
+        let results = pool
             .query(
-                urls,
+                &urls,
                 filter,
                 SubscriptionOptions {
                     label: Some("test".to_string()),
@@ -294,27 +344,68 @@ mod tests {
             )
             .await;
 
-        assert!(events.len() > 10, "was {}", events.len()); // should be greater than 10 since we're reading 5 from each relay
-        assert!(events.len() < 25, "was {}", events.len()); // but still we should have eliminated some duplicates so less than 25
+        // each relay returns its 5 newest, which overlap with the next relay's
+        let expected: HashSet<ID> = (0..5)
+            .flat_map(|i| events[i * 3 + 1..i * 3 + 6].iter().map(|e| e.id))
+            .collect();
+        let got: HashSet<ID> = results.iter().map(|e| e.id).collect();
+        assert_eq!(results.len(), got.len(), "there should be no duplicates");
+        assert_eq!(got, expected);
 
-        // ok let's be sure there are no duplicates
-        let mut ids = HashSet::new();
-        for event in events.iter() {
-            assert!(ids.insert(event.id));
+        // and they are sorted from newest to oldest
+        assert!(results.windows(2).all(|w| w[0].created_at >= w[1].created_at));
+
+        for server in servers {
+            server.abort();
         }
     }
 
     #[tokio::test]
     async fn test_pool_ensure() {
         let pool = Network::new();
+        let (url, server) = spawn_relay_with_events("test", &[]).await;
 
-        let relay1 = pool.ensure_relay("wss://nos.lol").await.unwrap();
-        let relay2 = pool.ensure_relay("wss://nos.lol").await.unwrap();
+        let relay1 = pool.ensure_relay(&url).await.unwrap();
+        let relay2 = pool.ensure_relay(&url).await.unwrap();
 
         // should return the same relay instance
         assert!(std::ptr::eq(
             relay1.sub_sender_map.as_ref() as *const _,
             relay2.sub_sender_map.as_ref() as *const _
         ));
+        assert!(pool.get_relay(&url).await.is_some());
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_hanging_relay_does_not_block_others() {
+        let pool = Network::new();
+        let (good_url, server) = spawn_relay_with_events("test", &[]).await;
+
+        // a listener that never completes the websocket handshake
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let hanging_url = format!("ws://{}", listener.local_addr().unwrap());
+        let _hanging = tokio::spawn(async move {
+            let mut conns = Vec::new();
+            while let Ok((conn, _)) = listener.accept().await {
+                conns.push(conn);
+            }
+        });
+
+        let pool_ = pool.clone();
+        let hanging = tokio::spawn(async move { pool_.ensure_relay(&hanging_url).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            pool.ensure_relay(&good_url),
+        )
+        .await
+        .expect("connecting to a good relay shouldn't wait for the hanging one")
+        .unwrap();
+
+        hanging.abort();
+        server.abort();
     }
 }

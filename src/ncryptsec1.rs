@@ -123,7 +123,7 @@ pub fn decrypt(bech32_string: &str, password: &str) -> Result<crate::SecretKey, 
         return Err(DecryptError::InvalidPrefix);
     }
 
-    if data.len() < 91 {
+    if data.len() != 91 {
         return Err(DecryptError::InvalidDataLength(data.len()));
     }
 

@@ -21,15 +21,19 @@ pub struct Event {
 }
 
 impl Event {
+    /// check that the id matches the event contents and that the signature is valid for it
     pub fn verify_signature(&self) -> bool {
         let pubkey = match secp256k1::XOnlyPublicKey::from_byte_array(self.pubkey.0) {
             Ok(pk) => pk,
             Err(_) => return false,
         };
 
-        let signature = secp256k1::schnorr::Signature::from_byte_array(self.sig.0);
+        let hash: [u8; 32] = sha2::Sha256::digest(self.serialize()).into();
+        if hash != self.id.0 {
+            return false;
+        }
 
-        let hash = sha2::Sha256::digest(self.serialize());
+        let signature = secp256k1::schnorr::Signature::from_byte_array(self.sig.0);
         secp256k1::schnorr::verify(&signature, &hash, &pubkey).is_ok()
     }
 

@@ -40,15 +40,22 @@ pub enum PubKeyError {
 }
 
 /// A 32-byte secret key
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecretKey(pub [u8; 32]);
+
+// don't leak the secret through debug output (structs that contain it derive Debug)
+impl std::fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<sk:{}>", self.pubkey().to_hex())
+    }
+}
 
 impl SecretKey {
     /// generate a new random secret key
     pub fn generate() -> Self {
         let mut rng = secp256k1::rand::rng();
         let keypair = secp256k1::Keypair::new(&mut rng);
-        SecretKey(keypair.secret_bytes())
+        SecretKey(keypair.to_secret_bytes())
     }
 
     /// create a new secret key from bytes
@@ -80,7 +87,7 @@ impl SecretKey {
         let secret_key = secp256k1::SecretKey::from_secret_bytes(self.0).unwrap();
         let keypair = secp256k1::Keypair::from_secret_key(&secret_key);
         let (xonly_pk, _) = secp256k1::XOnlyPublicKey::from_keypair(&keypair);
-        PubKey::from_bytes_unchecked(xonly_pk.serialize())
+        PubKey::from_bytes_unchecked(xonly_pk.to_byte_array())
     }
 
     pub fn to_ecdsa_key(&self) -> secp256k1::SecretKey {

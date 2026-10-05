@@ -22,7 +22,9 @@ impl Timestamp {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_secs() as u32,
+                .as_secs()
+                .try_into()
+                .unwrap_or(u32::MAX),
         )
     }
 
@@ -49,9 +51,11 @@ impl From<Timestamp> for u32 {
     }
 }
 
-impl From<i64> for Timestamp {
-    fn from(value: i64) -> Self {
-        Self(value as u32)
+impl TryFrom<i64> for Timestamp {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
     }
 }
 
@@ -74,21 +78,27 @@ impl From<u16> for Timestamp {
     }
 }
 
-impl From<u64> for Timestamp {
-    fn from(value: u64) -> Self {
-        Self(value as u32)
+impl TryFrom<u64> for Timestamp {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
     }
 }
 
-impl From<i32> for Timestamp {
-    fn from(value: i32) -> Self {
-        Self(value as u32)
+impl TryFrom<i32> for Timestamp {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
     }
 }
 
-impl From<usize> for Timestamp {
-    fn from(value: usize) -> Self {
-        Self(value as u32)
+impl TryFrom<usize> for Timestamp {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
     }
 }
 
@@ -97,7 +107,7 @@ impl From<std::time::SystemTime> for Timestamp {
         let duration = value
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
-        Self(duration.as_secs() as u32)
+        Self(duration.as_secs().try_into().unwrap_or(u32::MAX))
     }
 }
 

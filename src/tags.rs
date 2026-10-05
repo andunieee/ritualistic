@@ -28,7 +28,7 @@ impl Tags {
     }
 
     /// find the first tag with the given key that has at least one value
-    pub fn find(&self, key: String) -> Option<&Tag> {
+    pub fn find(&self, key: &str) -> Option<&Tag> {
         self.0
             .iter()
             .find(|&tag| tag.len() >= 2 && tag[0] == key)
@@ -36,7 +36,7 @@ impl Tags {
     }
 
     /// find all tags with the given key that have at least one value
-    pub fn find_all(&self, key: String) -> impl Iterator<Item = &Tag> {
+    pub fn find_all<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a Tag> {
         self.0
             .iter()
             .filter(move |tag| tag.len() >= 2 && tag[0] == key)

@@ -91,6 +91,9 @@ pub struct BunkerClient {
     >,
     on_auth_url: std::sync::Arc<Option<AuthURLHandler>>,
 
+    // number of relays for which we've either started listening for responses or given up on
+    subscriptions_ready: tokio::sync::watch::Receiver<usize>,
+
     // memoized
     get_pubkey_response: std::sync::Arc<tokio::sync::Mutex<Option<crate::PubKey>>>,
 }
@@ -109,6 +112,9 @@ impl BunkerClient {
             &client_secret_key,
         );
 
+        let (ready_sender, subscriptions_ready) = tokio::sync::watch::channel(0usize);
+        let ready_sender = std::sync::Arc::new(ready_sender);
+
         let bunker = Self {
             client_secret_key,
             pool,
@@ -119,6 +125,7 @@ impl BunkerClient {
                 slotmap::SlotMap::with_capacity_and_key(10),
             )),
             on_auth_url: std::sync::Arc::new(on_auth_url),
+            subscriptions_ready,
             get_pubkey_response: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         };
 
@@ -130,7 +137,7 @@ impl BunkerClient {
             let filter = crate::Filter {
                 kinds: Some(vec![crate::Kind(24133)]),
                 tags: Some(vec![crate::filter::TagQuery(
-                    "#p".to_string(),
+                    "p".to_string(),
                     vec![client_pubkey.to_hex()],
                 )]),
                 since: Some(crate::Timestamp::now()),
@@ -144,9 +151,17 @@ impl BunkerClient {
                 let pool = pool.clone();
                 let on_auth_url = on_auth_url.clone();
                 let awaiting_responses = awaiting_responses.clone();
+                let ready_sender = ready_sender.clone();
                 tokio::spawn(async move {
-                    if let Ok(relay) = pool.ensure_relay(&url).await {
-                        let mut sub = relay.subscribe(filter, Default::default()).await;
+                    let relay = pool.ensure_relay(&url).await;
+                    let sub = match &relay {
+                        // the REQ is already in the relay's write queue once this returns
+                        Ok(relay) => Some(relay.subscribe(filter, Default::default()).await),
+                        Err(_) => None,
+                    };
+                    ready_sender.send_modify(|n| *n += 1);
+
+                    if let Some(mut sub) = sub {
                         while let Some(occ) = sub.recv().await {
                             if let crate::relay::Occurrence::Event(event) = occ {
                                 if event.kind.0 != 24133 {
@@ -161,7 +176,7 @@ impl BunkerClient {
                                     let rk =
                                         match lowercase_hex::decode_to_array::<&str, 8>(&resp.id) {
                                             Ok(bytes) => RequestKey(slotmap::KeyData::from_ffi(
-                                                u64::from_be_bytes(bytes),
+                                                u64::from_le_bytes(bytes),
                                             )),
                                             Err(_) => continue,
                                         };
@@ -169,11 +184,12 @@ impl BunkerClient {
                                     if resp.result.as_deref() == Some("auth_url")
                                         && let Some(auth_url) = &resp.error
                                     {
-                                        {
-                                            if let Some(on_auth_fn) = on_auth_url.as_ref() {
-                                                on_auth_fn.0(auth_url);
-                                            }
+                                        if let Some(on_auth_fn) = on_auth_url.as_ref() {
+                                            on_auth_fn.0(auth_url);
                                         }
+
+                                        // the actual response will come later with this same id
+                                        continue;
                                     }
 
                                     if let Some(dispatcher) =
@@ -308,6 +324,14 @@ impl BunkerClient {
     }
 
     async fn rpc(&self, method: &str, params: Vec<String>) -> Result<String, RPCError> {
+        // make sure we're listening for the response before sending the request, otherwise we might
+        // miss it (kind 24133 is ephemeral, relays won't store it)
+        let _ = self
+            .subscriptions_ready
+            .clone()
+            .wait_for(|n| *n >= self.relays.len())
+            .await;
+
         // prepare response listener
         let (tx, rx) = tokio::sync::oneshot::channel::<Response>();
         let rk = self.awaiting_responses.lock().await.insert(tx);
@@ -332,7 +356,7 @@ impl BunkerClient {
         // publish
         let mut sent = false;
         for url in self.relays.iter() {
-            if let Some(relay) = self.pool.get_relay(url).await
+            if let Ok(relay) = self.pool.ensure_relay(url).await
                 && relay.publish(event.clone()).await.is_ok()
             {
                 sent = true;
