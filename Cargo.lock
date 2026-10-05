@@ -1524,7 +1524,7 @@ dependencies = [
 
 [[package]]
 name = "ritualistic"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "assertables",
  "base64",

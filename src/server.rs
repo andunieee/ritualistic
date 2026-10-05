@@ -36,12 +36,36 @@ pub trait CustomRelay: Send + Sync {
     ) -> std::result::Result<Vec<crate::Event>, String> {
         Err("can't handle anything".to_string())
     }
+
+    /// called before any http request (websocket upgrades included) is handled,
+    /// returning an error rejects it with a 403
+    fn check_ip(&mut self, _ip: &std::net::IpAddr) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
+    /// the management methods (NIP-86) the given authenticated caller can use,
+    /// if this is empty the caller gets a 401
+    fn supported_management_methods(&mut self, _caller: &crate::PubKey) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// handle a management call, only called for methods listed by
+    /// `supported_management_methods` for this caller (except for "supportedmethods", which is
+    /// answered automatically). changes to `info` are reflected in the relay information document
+    fn handle_management(
+        &mut self,
+        _caller: &crate::PubKey,
+        _method: &crate::management::Method,
+        _info: &mut crate::relay_information::RelayInformationDocument,
+    ) -> std::result::Result<serde_json::Value, String> {
+        Err("not supported".to_string())
+    }
 }
 
 /// main relay server
 pub struct RelayInternals {
     /// relay metadata
-    pub info: crate::relay_information::RelayInformationDocument,
+    pub info: std::sync::RwLock<crate::relay_information::RelayInformationDocument>,
 
     /// the actual relay methods
     pub custom_relay: Box<tokio::sync::Mutex<dyn CustomRelay>>,
@@ -89,9 +113,36 @@ pub async fn serve(
     async fn service(
         req: hyper::Request<hyper::body::Incoming>,
         ri: std::sync::Arc<RelayInternals>,
+        peer_ip: std::net::IpAddr,
     ) -> std::result::Result<hyper::Response<http_body_util::Full<bytes::Bytes>>, ServiceError>
     {
+        let ip = client_ip(&req, peer_ip);
+        if let Err(reason) = ri.custom_relay.lock().await.check_ip(&ip) {
+            return Ok(hyper::Response::builder()
+                .status(hyper::StatusCode::FORBIDDEN)
+                .body(http_body_util::Full::new(bytes::Bytes::from(reason)))
+                .unwrap());
+        }
+
         match (req.method(), req.uri().path()) {
+            (&hyper::Method::OPTIONS, "/") => Ok(hyper::Response::builder()
+                .status(hyper::StatusCode::NO_CONTENT)
+                .header("access-control-allow-origin", "*")
+                .header("access-control-allow-methods", "GET, POST, OPTIONS")
+                .header(
+                    "access-control-allow-headers",
+                    "authorization, content-type, accept",
+                )
+                .body(http_body_util::Full::new(bytes::Bytes::new()))
+                .unwrap()),
+            (&hyper::Method::POST, "/")
+                if req
+                    .headers()
+                    .get("content-type")
+                    .is_some_and(|ct| ct == crate::management::CONTENT_TYPE) =>
+            {
+                Ok(handle_management_request(&ri, req).await)
+            }
             (&hyper::Method::GET, "/") => {
                 // check if this is a websocket upgrade request
                 if hyper_tungstenite::is_upgrade_request(&req) {
@@ -205,7 +256,7 @@ pub async fn serve(
                     if let Some(accept) = req.headers().get("accept")
                         && accept == "application/nostr+json"
                     {
-                        let info_json = match serde_json::to_string(&ri.info) {
+                        let info_json = match serde_json::to_string(&*ri.info.read().unwrap()) {
                             Ok(json) => json,
                             Err(e) => return Err(ServiceError::Json(e)),
                         };
@@ -218,10 +269,15 @@ pub async fn serve(
                     }
 
                     // default response
+                    let name = ri.info.read().unwrap().name.clone();
                     Ok(hyper::Response::builder()
                         .status(hyper::StatusCode::OK)
                         .body(http_body_util::Full::new(bytes::Bytes::from(
-                            "ritualistic nostr relay",
+                            if name.is_empty() {
+                                "ritualistic nostr relay".to_string()
+                            } else {
+                                name
+                            },
                         )))
                         .unwrap())
                 }
@@ -234,16 +290,17 @@ pub async fn serve(
     }
 
     loop {
-        let (tcp, _) = listener.accept().await?;
+        let (tcp, peer) = listener.accept().await?;
         let io = hyper_util::rt::TokioIo::new(tcp);
         let ri_ = ri.clone();
+        let peer_ip = peer.ip();
 
         tokio::task::spawn(async move {
             let http = hyper::server::conn::http1::Builder::new();
             let conn = http
                 .serve_connection(
                     io,
-                    hyper::service::service_fn(|req| service(req, ri_.clone())),
+                    hyper::service::service_fn(|req| service(req, ri_.clone(), peer_ip)),
                 )
                 .with_upgrades();
 
@@ -251,6 +308,126 @@ pub async fn serve(
                 log::debug!("error serving connection: {:?}", err);
             }
         });
+    }
+}
+
+/// the ip of the client, taken from the proxy headers if the connection comes from localhost
+fn client_ip<B>(req: &hyper::Request<B>, peer_ip: std::net::IpAddr) -> std::net::IpAddr {
+    if !peer_ip.is_loopback() {
+        return peer_ip;
+    }
+
+    let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+    header("x-forwarded-for")
+        .and_then(|v| v.split(',').next())
+        .or_else(|| header("x-real-ip"))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(peer_ip)
+}
+
+/// max size of a management request body
+const MAX_MANAGEMENT_BODY: usize = 64 * 1024;
+
+async fn handle_management_request(
+    ri: &std::sync::Arc<RelayInternals>,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> hyper::Response<http_body_util::Full<bytes::Bytes>> {
+    use http_body_util::BodyExt;
+
+    let respond = |status: hyper::StatusCode, response: crate::management::Response| {
+        hyper::Response::builder()
+            .status(status)
+            .header("content-type", "application/json")
+            .header("access-control-allow-origin", "*")
+            .body(http_body_util::Full::new(bytes::Bytes::from(
+                serde_json::to_string(&response).expect("response always serializes"),
+            )))
+            .unwrap()
+    };
+    let fail = |status: hyper::StatusCode, error: String| {
+        respond(
+            status,
+            crate::management::Response {
+                result: serde_json::Value::Null,
+                error: Some(error),
+            },
+        )
+    };
+
+    let headers = req.headers().clone();
+    let path = req.uri().path().to_string();
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let host = header("x-forwarded-host")
+        .or_else(|| header("host"))
+        .unwrap_or_default()
+        .to_string();
+
+    let body = match http_body_util::Limited::new(req.into_body(), MAX_MANAGEMENT_BODY)
+        .collect()
+        .await
+    {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => {
+            return fail(
+                hyper::StatusCode::PAYLOAD_TOO_LARGE,
+                "request body too large or unreadable".to_string(),
+            );
+        }
+    };
+
+    let caller = match crate::management::validate_auth(
+        header("authorization"),
+        &host,
+        &path,
+        "POST",
+        &body,
+    ) {
+        Ok(pubkey) => pubkey,
+        Err(err) => return fail(hyper::StatusCode::UNAUTHORIZED, err.to_string()),
+    };
+
+    let request: crate::management::Request = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(err) => {
+            return fail(
+                hyper::StatusCode::BAD_REQUEST,
+                format!("invalid request: {}", err),
+            );
+        }
+    };
+
+    let mut relay = ri.custom_relay.lock().await;
+    let supported = relay.supported_management_methods(&caller);
+    if supported.is_empty() {
+        return fail(hyper::StatusCode::UNAUTHORIZED, "unauthorized".to_string());
+    }
+
+    let method = match crate::management::Method::parse(request) {
+        Ok(method) => method,
+        Err(err) => return fail(hyper::StatusCode::OK, err.to_string()),
+    };
+
+    let result = match &method {
+        crate::management::Method::SupportedMethods => Ok(serde_json::json!(supported)),
+        method if !supported.iter().any(|name| name == method.name()) => {
+            Err(format!("method '{}' not supported", method.name()))
+        }
+        method => {
+            let mut info = ri.info.write().unwrap();
+            relay.handle_management(&caller, method, &mut info)
+        }
+    };
+    drop(relay);
+
+    match result {
+        Ok(result) => respond(
+            hyper::StatusCode::OK,
+            crate::management::Response {
+                result,
+                error: None,
+            },
+        ),
+        Err(err) => fail(hyper::StatusCode::OK, err),
     }
 }
 
@@ -504,6 +681,110 @@ mod tests {
         }
     }
 
+    struct ManagedRelay {
+        admin: PubKey,
+        blocked: Vec<std::net::IpAddr>,
+    }
+
+    impl CustomRelay for ManagedRelay {
+        fn check_ip(&mut self, ip: &std::net::IpAddr) -> std::result::Result<(), String> {
+            if self.blocked.contains(ip) {
+                Err("blocked".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn supported_management_methods(&mut self, caller: &PubKey) -> Vec<String> {
+            if *caller == self.admin {
+                vec!["changerelayname".to_string(), "blockip".to_string()]
+            } else {
+                vec![]
+            }
+        }
+
+        fn handle_management(
+            &mut self,
+            _caller: &PubKey,
+            method: &crate::management::Method,
+            info: &mut RelayInformationDocument,
+        ) -> std::result::Result<serde_json::Value, String> {
+            use crate::management::Method;
+            match method {
+                Method::ChangeRelayName(name) => info.name = name.clone(),
+                Method::BlockIP(ip, _) => self.blocked.push(*ip),
+                _ => return Err("unexpected".to_string()),
+            }
+            Ok(serde_json::Value::Bool(true))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_management() {
+        use crate::management::{CallError, Method, call, call_as, call_raw};
+
+        let admin = SecretKey::generate();
+        let (url, server) = testing::spawn_relay(
+            "managed",
+            ManagedRelay {
+                admin: admin.pubkey(),
+                blocked: vec![],
+            },
+        )
+        .await;
+
+        // strangers can't do anything
+        let stranger = SecretKey::generate();
+        let err = call(&url, &stranger, &Method::SupportedMethods)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CallError::Relay(e) if e == "unauthorized"));
+
+        // the admin can
+        let methods: Vec<String> = call_as(&url, &admin, &Method::SupportedMethods)
+            .await
+            .unwrap();
+        assert_eq!(methods, ["changerelayname", "blockip"]);
+
+        // methods can also be called by name, known or not
+        let methods = call_raw(&url, &admin, "supportedmethods", vec![])
+            .await
+            .unwrap();
+        assert_eq!(methods, serde_json::json!(["changerelayname", "blockip"]));
+        let err = call_raw(&url, &admin, "createrole", vec![serde_json::json!("mod")])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CallError::Relay(_)));
+
+        let err = call(&url, &admin, &Method::ChangeRelayIcon("x".into()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CallError::Relay(_)));
+
+        let res = call(&url, &admin, &Method::ChangeRelayName("renamed".into()))
+            .await
+            .unwrap();
+        assert_eq!(res, serde_json::Value::Bool(true));
+        let info = crate::relay_information::fetch(&url).await.unwrap();
+        assert_eq!(info.name, "renamed");
+
+        // now block ourselves
+        call(
+            &url,
+            &admin,
+            &Method::BlockIP("127.0.0.1".parse().unwrap(), None),
+        )
+        .await
+        .unwrap();
+        let err = call(&url, &admin, &Method::SupportedMethods)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CallError::Status(403)));
+        assert!(Relay::connect(url.parse().unwrap(), None).await.is_err());
+
+        server.abort();
+    }
+
     #[tokio::test]
     async fn test_metadata_endpoint() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -512,7 +793,8 @@ mod tests {
             info: RelayInformationDocument {
                 name: "ksowknex".to_string(),
                 ..Default::default()
-            },
+            }
+            .into(),
             custom_relay: Box::new(tokio::sync::Mutex::new(InMemoryRelay {
                 events: Vec::with_capacity(1024),
             })),
@@ -552,7 +834,8 @@ mod tests {
             info: RelayInformationDocument {
                 name: "test-relay".to_string(),
                 ..Default::default()
-            },
+            }
+            .into(),
             custom_relay: Box::new(tokio::sync::Mutex::new(InMemoryRelay {
                 events: Vec::with_capacity(1024),
             })),
@@ -639,7 +922,8 @@ mod tests {
             info: RelayInformationDocument {
                 name: "even-relay".to_string(),
                 ..Default::default()
-            },
+            }
+            .into(),
             custom_relay: Box::new(tokio::sync::Mutex::new(EvenTimestampRelay {
                 events: Vec::with_capacity(1024),
             })),
@@ -649,7 +933,8 @@ mod tests {
             info: RelayInformationDocument {
                 name: "odd-relay".to_string(),
                 ..Default::default()
-            },
+            }
+            .into(),
             custom_relay: Box::new(tokio::sync::Mutex::new(OddTimestampRelay {
                 events: Vec::with_capacity(1024),
             })),
@@ -659,7 +944,8 @@ mod tests {
             info: RelayInformationDocument {
                 name: "multiple-of-three-relay".to_string(),
                 ..Default::default()
-            },
+            }
+            .into(),
             custom_relay: Box::new(tokio::sync::Mutex::new(MultipleOfThreeRelay {
                 events: Vec::with_capacity(1024),
             })),
@@ -840,7 +1126,8 @@ pub(crate) mod testing {
             info: crate::relay_information::RelayInformationDocument {
                 name: name.to_string(),
                 ..Default::default()
-            },
+            }
+            .into(),
             custom_relay: Box::new(tokio::sync::Mutex::new(custom_relay)),
         });
         (url, tokio::spawn(serve(ri, listener)))
