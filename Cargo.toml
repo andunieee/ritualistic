@@ -1,6 +1,6 @@
 [package]
 name = "ritualistic"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"
@@ -57,9 +57,14 @@ tokio-tungstenite = { version = "0.27.0", features = ["rustls-tls-native-roots"]
 reqwest = { version = "0.12.20", default-features = false, features = ["json", "rustls-tls"] }
 http-body-util = "0.1.3"
 hyper-util = { version = "0.1.14", features = ["tokio"] }
-sha2 = { version = "0.10", features = ["asm"] }
 lmdb-master-sys = { version = "0.2.5", optional = true }
 redb = { version = "4.3.0", optional = true }
+
+# sha2's "asm" feature pulls in sha2-asm, which does not support Windows
+# targets, so only enable it where it builds. elsewhere the pure-Rust
+# backend from the main `sha2` dependency above is used.
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "windows")))'.dependencies]
+sha2 = { version = "0.10", features = ["asm"] }
 
 [dev-dependencies]
 assertables = "9.8.2"
