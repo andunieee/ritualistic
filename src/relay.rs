@@ -119,7 +119,7 @@ impl Relay {
         mut on_close: Option<oneshot::Sender<String>>,
     ) -> Result<Self, ConnectError> {
         use wasm_bindgen::{JsCast, JsValue, closure::Closure};
-        use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
+        use web_sys::{CloseEvent, Event, MessageEvent, WebSocket};
 
         // create websocket
         let (write_sender, mut write_receiver) = mpsc::channel(1);
@@ -182,9 +182,11 @@ impl Relay {
         ws.set_onmessage(Some(on_message.into_js_value().unchecked_ref()));
 
         // setup error handler
-        let on_error = Closure::once(Box::new(move |e: ErrorEvent| {
-            log::info!("websocket error: {:?}", e.message());
-        }) as Box<dyn FnOnce(ErrorEvent)>);
+        // browsers fire a plain Event here, not an ErrorEvent, so calling .message() on it throws
+        let error_url = url.to_string();
+        let on_error = Closure::once(Box::new(move |_: Event| {
+            log::info!("websocket error on {}", error_url);
+        }) as Box<dyn FnOnce(Event)>);
         ws.set_onerror(Some(on_error.into_js_value().unchecked_ref()));
 
         // setup close handler
