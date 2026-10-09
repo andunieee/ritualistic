@@ -80,6 +80,13 @@ impl std::fmt::Debug for SubscriptionOptions {
     }
 }
 
+#[derive(Default, Clone, Debug)]
+pub struct PublishOptions {
+    /// when the relay rejects the event with "auth-required:", perform NIP-42 AUTH with this
+    /// and publish again (only once)
+    pub auth_automatically: Option<Finalizer>,
+}
+
 #[derive(Debug)]
 pub enum Occurrence {
     Event(Event),
@@ -380,7 +387,32 @@ impl Relay {
         Ok(relay)
     }
 
-    pub async fn publish(&self, event: Event) -> Result<(), PublishError> {
+    pub async fn publish(&self, event: Event, opts: PublishOptions) -> Result<(), PublishError> {
+        let result = self.send_event(&event).await;
+
+        if let Err(PublishError::NotOK(reason)) = &result
+            && reason.starts_with("auth-required:")
+            && let Some(finalizer) = &opts.auth_automatically
+            && let Some(challenge) = self.challenge.read().await.clone()
+            // boxed because this can recurse: publish -> finalizer -> bunker -> publish
+            && Box::pin(perform_auth(
+                &self.write_queue,
+                &self.ok_callbacks,
+                self.url.as_str(),
+                challenge,
+                finalizer,
+            ))
+            .await
+        {
+            // now that we're authenticated we try again, but only once
+            return self.send_event(&event).await;
+        }
+
+        result
+    }
+
+    /// send an EVENT and wait for the OK
+    async fn send_event(&self, event: &Event) -> Result<(), PublishError> {
         let id = event.id;
         let (tx, rx) = oneshot::channel();
         self.ok_callbacks.insert(id, tx);
@@ -482,6 +514,44 @@ impl std::fmt::Display for Relay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<relay url={}>", self.url)
     }
+}
+
+/// sign a NIP-42 AUTH event for the given challenge, send it and wait for the relay's OK
+async fn perform_auth(
+    write_queue: &mpsc::Sender<String>,
+    ok_callbacks: &DashMap<ID, oneshot::Sender<Result<(), String>>>,
+    relay_url: &str,
+    challenge: String,
+    finalizer: &Finalizer,
+) -> bool {
+    let Ok(auth_event) = finalizer
+        .finalize_event(EventTemplate {
+            created_at: Timestamp::now(),
+            kind: Kind(22242),
+            content: "".to_string(),
+            tags: Tags(vec![
+                vec!["relay".to_string(), relay_url.to_string()],
+                vec!["challenge".to_string(), challenge],
+            ]),
+        })
+        .await
+    else {
+        return false;
+    };
+
+    let auth_id = auth_event.id;
+    let (tx, rx) = oneshot::channel();
+    ok_callbacks.insert(auth_id, tx);
+    let _ = write_queue
+        .send(serde_json::to_string(&Envelope::AuthEvent { event: auth_event }).unwrap())
+        .await;
+
+    let ok = matches!(
+        tokio::time::timeout(PUBLISH_TIMEOUT, rx).await,
+        Ok(Ok(Ok(())))
+    );
+    ok_callbacks.remove(&auth_id);
+    ok
 }
 
 #[inline]
@@ -588,42 +658,14 @@ async fn handle_nostr_envelope(
                 drop(ssm);
 
                 tokio::spawn(async move {
-                    let result = finalizer
-                        .finalize_event(EventTemplate {
-                            created_at: Timestamp::now(),
-                            kind: Kind(22242),
-                            content: "".to_string(),
-                            tags: Tags(vec![
-                                vec!["relay".to_string(), relay_url.to_string()],
-                                vec!["challenge".to_string(), challenge],
-                            ]),
-                        })
-                        .await;
-
-                    let authenticated = match result {
-                        Ok(auth_event) => {
-                            // send the AUTH message and wait for an OK
-                            let auth_id = auth_event.id;
-                            let (tx, rx) = oneshot::channel();
-                            ok_callbacks.insert(auth_id, tx);
-                            let _ = write_queue
-                                .send(
-                                    serde_json::to_string(&Envelope::AuthEvent {
-                                        event: auth_event,
-                                    })
-                                    .unwrap(),
-                                )
-                                .await;
-
-                            let ok = matches!(
-                                tokio::time::timeout(PUBLISH_TIMEOUT, rx).await,
-                                Ok(Ok(Ok(())))
-                            );
-                            ok_callbacks.remove(&auth_id);
-                            ok
-                        }
-                        Err(_) => false,
-                    };
+                    let authenticated = perform_auth(
+                        &write_queue,
+                        &ok_callbacks,
+                        &relay_url,
+                        challenge,
+                        &finalizer,
+                    )
+                    .await;
 
                     if authenticated {
                         // then restart the subscription
@@ -744,6 +786,81 @@ mod tests {
             }
         }
         assert_eq!(count, 3);
+        server.abort();
+    }
+
+    /// a relay that sends an AUTH challenge on connect and only accepts events after a valid AUTH
+    async fn spawn_auth_required_relay() -> (String, tokio::task::JoinHandle<()>) {
+        use futures::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (conn, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(conn).await.unwrap();
+            ws.send(Message::text(r#"["AUTH","chall"]"#)).await.unwrap();
+
+            let mut authed = false;
+            while let Some(Ok(msg)) = ws.next().await {
+                let Message::Text(text) = msg else { continue };
+                let reply = match serde_json::from_str::<Envelope>(&text) {
+                    Ok(Envelope::AuthEvent { event }) => {
+                        authed = event.verify_signature()
+                            && event
+                                .tags
+                                .0
+                                .contains(&vec!["challenge".to_string(), "chall".to_string()]);
+                        serde_json::json!(["OK", event.id, authed, ""])
+                    }
+                    Ok(Envelope::OutEvent { event }) if authed => {
+                        serde_json::json!(["OK", event.id, true, ""])
+                    }
+                    Ok(Envelope::OutEvent { event }) => {
+                        serde_json::json!(["OK", event.id, false, "auth-required: who are you"])
+                    }
+                    _ => continue,
+                };
+                ws.send(Message::text(reply.to_string())).await.unwrap();
+            }
+        });
+
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn test_publish_auth_required() {
+        let sk = crate::SecretKey::generate();
+        let event = EventTemplate {
+            created_at: Timestamp::now(),
+            kind: Kind(1),
+            content: "hello".to_string(),
+            tags: Tags(vec![]),
+        }
+        .finalize(&sk);
+
+        // without a finalizer we get the relay's rejection back
+        let (url, server) = spawn_auth_required_relay().await;
+        let relay = Relay::connect(url.parse().unwrap(), None).await.unwrap();
+        let err = relay
+            .publish(event.clone(), PublishOptions::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PublishError::NotOK(r) if r.starts_with("auth-required:")));
+        server.abort();
+
+        // with one we authenticate and publish again
+        let (url, server) = spawn_auth_required_relay().await;
+        let relay = Relay::connect(url.parse().unwrap(), None).await.unwrap();
+        relay
+            .publish(
+                event,
+                PublishOptions {
+                    auth_automatically: Some(Finalizer::Plain(sk)),
+                },
+            )
+            .await
+            .unwrap();
         server.abort();
     }
 

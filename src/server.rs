@@ -860,7 +860,10 @@ mod tests {
         let event_id = event.id;
 
         // publish the event
-        relay.publish(event.clone()).await.unwrap();
+        relay
+            .publish(event.clone(), crate::PublishOptions::default())
+            .await
+            .unwrap();
 
         // subscribe to events
         let filter = Filter {
@@ -983,7 +986,13 @@ mod tests {
 
         // publish all events to all relays
         for event in &events {
-            let mut publish_results = pool.publish_many(relay_urls.clone(), event.clone()).await;
+            let mut publish_results = pool
+                .publish_many(
+                    relay_urls.clone(),
+                    event.clone(),
+                    crate::PublishOptions::default(),
+                )
+                .await;
 
             // wait for all publish results
             let mut results = Vec::new();

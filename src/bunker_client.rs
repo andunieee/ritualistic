@@ -357,7 +357,10 @@ impl BunkerClient {
         let mut sent = false;
         for url in self.relays.iter() {
             if let Ok(relay) = self.pool.ensure_relay(url).await
-                && relay.publish(event.clone()).await.is_ok()
+                && relay
+                    .publish(event.clone(), crate::PublishOptions::default())
+                    .await
+                    .is_ok()
             {
                 sent = true;
             }

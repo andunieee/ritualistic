@@ -117,6 +117,7 @@ impl Network {
         &mut self,
         urls: T,
         event: crate::Event,
+        publish_options: crate::PublishOptions,
     ) -> tokio::sync::mpsc::UnboundedReceiver<PublishResult>
     where
         S: AsRef<str>,
@@ -127,12 +128,13 @@ impl Network {
         for url in urls.as_ref() {
             let tx = tx.clone();
             let event = event.clone();
+            let publish_options = publish_options.clone();
             let pool = self.clone();
 
             if let Ok(url) = crate::normalize_url(url.as_ref()) {
                 tokio::spawn(async move {
                     let result = match pool.ensure_relay(&url).await {
-                        Ok(relay) => match relay.publish(event).await {
+                        Ok(relay) => match relay.publish(event, publish_options).await {
                             Ok(_) => PublishResult {
                                 error: None,
                                 relay_url: url.to_string(),

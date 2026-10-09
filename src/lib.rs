@@ -57,13 +57,13 @@ pub use keys::{PubKey, SecretKey};
 pub use lmdb::LMDBEventDatabase;
 pub use metadata::Metadata;
 pub use network::{Network, Occurrence, PublishResult};
-pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
-pub use profile::Profile;
 #[cfg(all(feature = "redb", target_arch = "wasm32"))]
 pub use opfs::OpfsBackend;
+pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
+pub use profile::Profile;
 #[cfg(feature = "redb")]
 pub use redb::RedbEventDatabase;
-pub use relay::{CloseReason, Relay, SubscriptionOptions};
+pub use relay::{CloseReason, PublishOptions, Relay, SubscriptionOptions};
 pub use tags::{Tag, Tags};
 pub use timestamp::Timestamp;
 pub use types::*;
