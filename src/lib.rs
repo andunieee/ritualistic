@@ -31,7 +31,7 @@ pub mod server;
 
 mod btree;
 pub mod database;
-mod finalizer;
+pub mod finalizer;
 #[cfg(all(feature = "lmdb", not(target_arch = "wasm32")))]
 mod lmdb;
 mod network;
@@ -52,6 +52,7 @@ pub use database::EventDatabase;
 pub use event::{ArchivedEvent, Event};
 pub use event_template::EventTemplate;
 pub use filter::{Filter, TagQuery};
+pub use finalizer::Finalizer;
 pub use keys::{PubKey, SecretKey};
 #[cfg(all(feature = "lmdb", not(target_arch = "wasm32")))]
 pub use lmdb::LMDBEventDatabase;
