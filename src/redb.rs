@@ -34,9 +34,25 @@ pub struct RedbEventDatabase {
 
 impl RedbEventDatabase {
     /// open (or create) a database at the given file
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let db = redb::Database::create(path).map_err(err)?;
+        Self::from_database(redb::Database::create(path).map_err(err)?)
+    }
 
+    /// open (or create) a database in the file `name` of the browser's origin private file
+    /// system. see [`crate::OpfsBackend`] for what that means for durability.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn open_opfs(name: &str) -> Result<Self> {
+        let backend = crate::OpfsBackend::open(name).await?;
+        Self::from_database(
+            redb::Database::builder()
+                .create_with_backend(backend)
+                .map_err(err)?,
+        )
+    }
+
+    /// use a database opened in some other way, e.g. with a custom storage backend
+    pub fn from_database(db: redb::Database) -> Result<Self> {
         // create all tables upfront, as read transactions can't open tables that don't exist
         let txn = db.begin_write().map_err(err)?;
         txn.open_table(EVENTS).map_err(err)?;
@@ -218,7 +234,7 @@ fn err(err: impl Into<redb::Error>) -> DatabaseError {
     DatabaseError::Redb(err.into().to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::database::tests::{PK1, event, query};

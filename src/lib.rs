@@ -35,7 +35,11 @@ mod finalizer;
 #[cfg(all(feature = "lmdb", not(target_arch = "wasm32")))]
 mod lmdb;
 mod network;
-#[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "redb", target_arch = "wasm32"))]
+mod opfs;
+#[cfg(all(feature = "redb", any(test, target_arch = "wasm32")))]
+mod pages;
+#[cfg(feature = "redb")]
 mod redb;
 mod relay;
 mod tags;
@@ -55,7 +59,9 @@ pub use metadata::Metadata;
 pub use network::{Network, Occurrence, PublishResult};
 pub use pointers::{AddressPointer, EventPointer, Pointer, ProfilePointer};
 pub use profile::Profile;
-#[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "redb", target_arch = "wasm32"))]
+pub use opfs::OpfsBackend;
+#[cfg(feature = "redb")]
 pub use redb::RedbEventDatabase;
 pub use relay::{CloseReason, Relay, SubscriptionOptions};
 pub use tags::{Tag, Tags};
