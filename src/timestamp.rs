@@ -17,6 +17,13 @@
 pub struct Timestamp(pub u32);
 
 impl Timestamp {
+    // std::time::SystemTime::now() panics on wasm32-unknown-unknown, so use the js clock there
+    #[cfg(target_arch = "wasm32")]
+    pub fn now() -> Self {
+        Self((js_sys::Date::now() / 1000.0) as u32)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn now() -> Self {
         Self(
             std::time::SystemTime::now()
