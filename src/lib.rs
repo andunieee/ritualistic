@@ -5,6 +5,7 @@
 //! this library provides types and utilities for working with the Nostr protocol,
 //! including events, filters, relays, and connections.
 
+pub mod blossom;
 pub mod bunker_client;
 pub mod codes;
 pub mod envelopes;
